@@ -2,7 +2,7 @@
 from pathlib import Path
 import numpy as np
 import sys
-from pyecn.read_LUT import read_LUT
+from read_LUT import read_LUT
 from tomli import load as load_toml
 
 root_dir = Path("pyecn/")

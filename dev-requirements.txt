@@ -72,8 +72,6 @@ matplotlib==3.7.2
     # via
     #   PyECN (pyproject.toml)
     #   vtk
-mayavi==4.8.1
-    # via PyECN (pyproject.toml)
 mccabe==0.7.0
     # via flake8
 moviepy==1.0.3
