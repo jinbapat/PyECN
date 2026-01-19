@@ -293,12 +293,3 @@ python pyecn/run_live_temp.py --profile profiles/mixed_charge_discharge.csv --t_
 - **profiles/hppc_pulse.csv** - HPPC-like pulse test
 - **profiles/mixed_charge_discharge.csv** - Mixed charge/discharge
 
-### Documentation (1200+ lines)
-- **README.md** - This comprehensive overview (all 4 parts)
-- **START_HERE.md** - Quick start guide
-- **CODEBASE_ANALYSIS.md** - Part A technical details
-- **INTEGRATION_GUIDE.md** - Optional advanced integration
-- **IMPLEMENTATION_SUMMARY.md** - Project metrics
-- **PROJECT_STATUS.md** - Verification checklist
-
----
