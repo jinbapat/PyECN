@@ -78,7 +78,7 @@ def create_modified_config(profile_path: str,
     with open(modified_config_path, 'wb') as f:
         tomli_w.dump(config, f)
     
-    print(f"✓ Created modified config: {modified_config_path}")
+    print(f"[OK] Created modified config: {modified_config_path}")
     return str(modified_config_path)
 
 
@@ -146,7 +146,7 @@ def run_live_visualization(profile_path: str,
         plotter = LiveTemperaturePlotter(nx=nx, ny=ny, nz=nz,
                                         cell_name='cell_1',
                                         update_interval=5)
-        print(f"✓ Plotter initialized. Generating synthetic thermal data...\n")
+        print(f"[OK] Plotter initialized. Generating synthetic thermal data...\n")
         
         # Simulate thermal evolution with synthetic data
         print("Running live visualization with synthetic thermal profile...")
@@ -154,40 +154,81 @@ def run_live_visualization(profile_path: str,
         
         num_steps = int(t_end / dt)
         
-        # Generate synthetic temperature evolution
-        # Mimics heating during discharge, cooling during rest
+        # Thermal properties - maximum smoothing for gradual response
+        cell_mass_total = 0.045  # kg (45 grams)
+        cell_c_p = 1100  # J/kg·K
+        cell_heat_capacity_total = cell_mass_total * cell_c_p
+        
+        # Significantly increase thermal mass per node
+        num_thermal_nodes = nx * ny * nz
+        cell_heat_capacity_per_node = cell_heat_capacity_total / num_thermal_nodes * 10  # 10x multiplier
+        
+        # Moderate cooling
+        T_ambient = 25 + 273.15  # Kelvin
+        h_convection = 8  # W/m²·K
+        
+        # Surface area
+        surface_area_total = 0.0041  # m²
+        surface_nodes = nx * ny
+        surface_area_per_node = surface_area_total / surface_nodes
+        
+        # Internal resistance
+        R_internal = 0.015  # Ohms (slightly higher for less heat)
+        
+        # Temperature tracking
+        T_nodes_prev = np.ones(nx * ny * nz) * T_ambient
+        T_surface_prev = np.ones((ny, nx)) * T_ambient
+        
+        # Generate temperature evolution
         for step in range(num_steps):
             t_sim = step * dt
             
             # Get current from profile
             I_current = profile.get_current(t_sim)
+            I_current = np.clip(I_current, -100, 100)
             
-            # Synthetic SoC (linear discharge approximation)
+            # Synthetic SoC
             SoC = max(0, 100 - (t_sim / t_end) * 50)
             
-            # Generate synthetic temperature distribution
-            # Base temperature + spatial variation + temporal heating
-            T_base = 25 + 273.15  # 25°C in Kelvin
+            # Heat generation (Joule heating: P = I²R)
+            q_generated_total = abs(I_current) ** 2 * R_internal
             
-            # Heating proportional to current (Joule heating)
-            I_normalized = min(abs(I_current) / 50, 1.0)  # Normalize to ~50A
-            heating = I_normalized * 15  # Max 15°C rise
-            
-            # Create spatial variation (hot spot in center)
+            # Heat distribution
             theta_indices = np.arange(nx)
             z_indices = np.arange(ny)
             theta_grid, z_grid = np.meshgrid(theta_indices, z_indices)
+            heat_distribution = np.exp(-((theta_grid - nx/2)**2 + (z_grid - ny/2)**2) / (2 * (nx + ny) / 4))
+            heat_distribution = heat_distribution / np.sum(heat_distribution)
             
-            # Gaussian-like hot spot at center
-            spatial_variation = 5 * np.exp(-((theta_grid - nx/2)**2 + (z_grid - ny/2)**2) / (nx + ny))
+            # Update surface temperatures
+            T_surface = np.zeros((ny, nx))
+            for i in range(ny):
+                for j in range(nx):
+                    # Heat in
+                    q_in = q_generated_total * heat_distribution[i, j]
+                    
+                    # Heat out (convection)
+                    dT_from_ambient = T_surface_prev[i, j] - T_ambient
+                    q_out = h_convection * surface_area_per_node * dT_from_ambient
+                    
+                    # Net heat and temperature change
+                    dQ_dt = q_in - q_out
+                    dT = (dQ_dt * dt) / cell_heat_capacity_per_node
+                    
+                    # Heavy damping for very smooth response
+                    T_new = T_surface_prev[i, j] + dT
+                    T_surface[i, j] = 0.95 * T_surface_prev[i, j] + 0.05 * T_new
             
-            # Temperature gradient with time
-            t_progress = (step / num_steps) ** 1.5
-            T_surface = T_base + heating + spatial_variation + t_progress * 5
+            # Ensure no NaN values
+            T_surface = np.nan_to_num(T_surface, nan=T_ambient)
             
-            # Create full 3D temperature array (only surface matters for visualization)
-            T_nodes = np.zeros(nx * ny * nz)
-            T_nodes[-nx*ny:] = T_surface.flatten()  # Set surface nodes
+            # Create full 3D array
+            T_nodes = np.ones(nx * ny * nz) * T_ambient
+            T_nodes[-nx*ny:] = T_surface.flatten()
+            
+            # Update for next iteration
+            T_surface_prev = T_surface.copy()
+            T_nodes_prev = T_nodes.copy()
             
             # Update plotter
             plotter.update_temperature(
@@ -207,8 +248,8 @@ def run_live_visualization(profile_path: str,
                 print(f"  Step {step}/{num_steps} | Time: {t_sim:.1f}s | "
                       f"Current: {I_current:.1f}A | SoC: {SoC:.1f}%")
         
-        print(f"\n✓ Simulation complete!")
-        print(f"✓ Processed {num_steps} steps in {t_end:.0f}s simulated time")
+        print(f"\n[OK] Simulation complete!")
+        print(f"[OK] Processed {num_steps} steps in {t_end:.0f}s simulated time")
         print(f"\nPlot window is open for inspection.")
         print("Close the window or press Ctrl+C to exit.\n")
         
