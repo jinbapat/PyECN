@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Live temperature visualization for cylindrical electrode surface.
+Live temperature visualization for cylindrical electrode (jelly roll unwrapped).
 
-Creates a 2D unwrapped surface map (theta vs z) with real-time animation
-and supporting plots for temperature statistics.
+Creates 2D unwrapped heatmap showing:
+- Full radial-axial cross-section (core to surface vs electrode height)
+- Like unwrapping a jelly roll to see the spiral from center to outside
 """
 
 import numpy as np
@@ -15,17 +16,18 @@ import collections
 
 
 class LiveTemperaturePlotter:
-    """Real-time 2D surface temperature visualization."""
+    """Real-time electrode temperature visualization as unwrapped jelly roll."""
     
     def __init__(self, 
                  nx: int, 
                  ny: int,
                  nz: int,
+                 n_radial: int = 5,
                  cell_name: str = 'cell_1',
                  update_interval: int = 5,
-                 figsize: Tuple[int, int] = (16, 10)):
+                 figsize: Tuple[int, int] = (14, 8)):
         """
-        Initialize the live temperature plotter.
+        Initialize the live temperature plotter for unwrapped electrode.
         
         Parameters
         ----------
@@ -35,6 +37,8 @@ class LiveTemperaturePlotter:
             Number of axial nodes (z direction)
         nz : int
             Number of radial nodes (r direction)
+        n_radial : int
+            Number of radial layers being tracked
         cell_name : str
             Name of the cell to monitor
         update_interval : int
@@ -45,6 +49,7 @@ class LiveTemperaturePlotter:
         self.nx = nx  # circumferential (theta)
         self.ny = ny  # axial (z)
         self.nz = nz  # radial (r)
+        self.n_radial = n_radial
         self.cell_name = cell_name
         self.update_interval = update_interval
         self.figsize = figsize
@@ -53,10 +58,10 @@ class LiveTemperaturePlotter:
         self.fig = plt.figure(figsize=figsize)
         gs = self.fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
         
-        # Main heatmap: surface temperature (theta vs z)
-        self.ax_heatmap = self.fig.add_subplot(gs[0, :])
+        # Main heatmap: full radial-axial cross-section (unwrapped jelly roll)
+        self.ax_main = self.fig.add_subplot(gs[0, :])
         
-        # Time series: average and max temperature
+        # Time series: temperature history
         self.ax_time_series = self.fig.add_subplot(gs[1, 0])
         
         # Statistics display
@@ -67,45 +72,48 @@ class LiveTemperaturePlotter:
         self.time_buffer = collections.deque(maxlen=1000)
         self.T_avg_buffer = collections.deque(maxlen=1000)
         self.T_max_buffer = collections.deque(maxlen=1000)
-        self.T_min_buffer = collections.deque(maxlen=1000)
         
-        # State
+        # Current data
         self.step_count = 0
         self.time_elapsed = 0.0
-        self.current_T_surface = None
-        self.im = None
+        self.T_radial_axial = None
+        self.I_current = None
+        self.SoC = None
+        
+        # Image object
+        self.im_main = None
         self.cbar = None
         
-        self._setup_heatmap()
+        self._setup_main_heatmap()
         self._setup_time_series()
         
-    def _setup_heatmap(self) -> None:
-        """Initialize the main heatmap axes."""
-        self.ax_heatmap.set_xlabel('Circumferential Index (θ)', fontsize=12, fontweight='bold')
-        self.ax_heatmap.set_ylabel('Axial Index (z)', fontsize=12, fontweight='bold')
-        self.ax_heatmap.set_title('Electrode Surface Temperature [°C]', 
-                                  fontsize=14, fontweight='bold')
+    def _setup_main_heatmap(self) -> None:
+        """Initialize the main unwrapped jelly roll heatmap."""
+        self.ax_main.set_xlabel('Radial Layer (Core → Surface)', fontsize=12, fontweight='bold')
+        self.ax_main.set_ylabel('Axial Position (z)', fontsize=12, fontweight='bold')
+        self.ax_main.set_title('Electrode Temperature - Unwrapped Jelly Roll (Core to Surface)', 
+                              fontsize=13, fontweight='bold')
         
         # Initialize empty heatmap
-        dummy_data = np.zeros((self.ny, self.nx))
-        self.im = self.ax_heatmap.imshow(dummy_data, cmap='RdYlBu_r', 
-                                          aspect='auto', origin='lower')
-        self.cbar = plt.colorbar(self.im, ax=self.ax_heatmap, label='Temperature (°C)')
+        dummy_data = np.zeros((self.ny, self.n_radial))
+        self.im_main = self.ax_main.imshow(dummy_data, cmap='RdYlBu_r', 
+                                          aspect='auto', origin='lower',
+                                          interpolation='bilinear')
+        self.cbar = plt.colorbar(self.im_main, ax=self.ax_main, label='Temperature (°C)')
     
     def _setup_time_series(self) -> None:
         """Initialize the time series plot."""
         self.ax_time_series.set_xlabel('Time (s)', fontsize=11, fontweight='bold')
         self.ax_time_series.set_ylabel('Temperature (°C)', fontsize=11, fontweight='bold')
-        self.ax_time_series.set_title('Surface Temperature History', 
+        self.ax_time_series.set_title('Temperature History', 
                                       fontsize=12, fontweight='bold')
         self.ax_time_series.grid(True, alpha=0.3)
         self.line_avg, = self.ax_time_series.plot([], [], 'b-', label='Average', linewidth=2)
         self.line_max, = self.ax_time_series.plot([], [], 'r-', label='Maximum', linewidth=2)
-        self.line_min, = self.ax_time_series.plot([], [], 'c-', label='Minimum', linewidth=2)
         self.ax_time_series.legend(loc='best', fontsize=10)
     
     def update_temperature(self, 
-                          T_nodes: np.ndarray,
+                          T_electrode: np.ndarray,
                           t_sim: float,
                           step: int,
                           I_current: Optional[float] = None,
@@ -115,8 +123,10 @@ class LiveTemperaturePlotter:
         
         Parameters
         ----------
-        T_nodes : np.ndarray
-            Temperature array of shape (ntotal,) or similar
+        T_electrode : np.ndarray
+            Radial-axial temperature array of shape (n_radial, ny) in Kelvin
+            Columns: radial layers (0=core, n-1=surface)
+            Rows: axial positions (z direction)
         t_sim : float
             Current simulation time in seconds
         step : int
@@ -131,55 +141,43 @@ class LiveTemperaturePlotter:
         self.I_current = I_current
         self.SoC = SoC
         
-        # Extract surface temperature (outermost radial layer)
-        # Assumption: T_nodes is shaped such that surface is the last ny*nx elements
-        # or we extract every nz-th node for surface
         try:
-            # For cylindrical cell: assume nodes are ordered (theta, z, r)
-            # Surface = r_max layer, i.e., last nx*ny nodes
-            if len(T_nodes) >= self.nx * self.ny:
-                T_surface = T_nodes[-self.nx*self.ny:].reshape(self.ny, self.nx)
+            # T_electrode shape should be (n_radial, ny) - radial vs axial
+            if T_electrode.ndim == 2:
+                # Convert to Celsius for display
+                self.T_radial_axial = T_electrode.T - 273.15  # Transpose to (ny, n_radial)
+                
+                # Compute statistics
+                T_avg = np.mean(T_electrode)
+                T_max = np.max(T_electrode)
+                
+                # Store in buffers
+                self.time_buffer.append(t_sim)
+                self.T_avg_buffer.append(T_avg - 273.15)
+                self.T_max_buffer.append(T_max - 273.15)
             else:
-                # Fallback: reshape available data
-                n_available = len(T_nodes)
-                T_surface = T_nodes[:self.nx*self.ny].reshape(self.ny, self.nx)
+                print(f"Warning: T_electrode has unexpected shape {T_electrode.shape}")
         except Exception as e:
-            print(f"Warning: Failed to extract surface temperature: {e}")
-            T_surface = np.full((self.ny, self.nx), np.mean(T_nodes) - 273.15)
-        
-        # Convert to Celsius
-        self.current_T_surface = T_surface - 273.15  # Kelvin to Celsius
-        
-        # Compute statistics
-        T_avg = np.mean(self.current_T_surface)
-        T_max = np.max(self.current_T_surface)
-        T_min = np.min(self.current_T_surface)
-        
-        # Store in buffers
-        self.time_buffer.append(t_sim)
-        self.T_avg_buffer.append(T_avg)
-        self.T_max_buffer.append(T_max)
-        self.T_min_buffer.append(T_min)
+            print(f"Warning: Failed to process T_electrode: {e}")
     
     def plot_update(self) -> None:
         """Update all plots with current data."""
-        if self.current_T_surface is None:
+        if self.T_radial_axial is None:
             return
         
-        # Update heatmap
-        self.im.set_data(self.current_T_surface)
-        vmin, vmax = self.current_T_surface.min(), self.current_T_surface.max()
-        self.im.set_clim(vmin, vmax)
+        # Update main heatmap (unwrapped jelly roll)
+        self.im_main.set_data(self.T_radial_axial)
+        vmin, vmax = self.T_radial_axial.min(), self.T_radial_axial.max()
+        self.im_main.set_clim(vmin, vmax)
         
         # Update time series
         if len(self.time_buffer) > 0:
             times = list(self.time_buffer)
             self.line_avg.set_data(times, list(self.T_avg_buffer))
             self.line_max.set_data(times, list(self.T_max_buffer))
-            self.line_min.set_data(times, list(self.T_min_buffer))
             
             self.ax_time_series.set_xlim(times[0], times[-1])
-            T_all = list(self.T_max_buffer) + list(self.T_min_buffer)
+            T_all = list(self.T_max_buffer) + list(self.T_avg_buffer)
             self.ax_time_series.set_ylim(min(T_all) - 1, max(T_all) + 1)
         
         # Update statistics
@@ -192,22 +190,22 @@ class LiveTemperaturePlotter:
         self.ax_stats.clear()
         self.ax_stats.axis('off')
         
-        if self.current_T_surface is None:
+        if self.T_radial_axial is None:
             return
         
-        T_avg = np.mean(self.current_T_surface)
-        T_max = np.max(self.current_T_surface)
-        T_min = np.min(self.current_T_surface)
+        T_avg = np.mean(self.T_radial_axial)
+        T_max = np.max(self.T_radial_axial)
+        T_min = np.min(self.T_radial_axial)
         T_delta = T_max - T_min
         
         stats_text = (
-            f"{'─'*30}\n"
-            f"{'SIMULATION STATUS':^30}\n"
-            f"{'─'*30}\n"
+            f"{'─'*35}\n"
+            f"{'SIMULATION STATUS':^35}\n"
+            f"{'─'*35}\n"
             f"Step: {self.step_count}\n"
             f"Time: {self.time_elapsed:.2f} s\n"
-            f"\n{'SURFACE TEMPERATURE':^30}\n"
-            f"{'─'*30}\n"
+            f"\n{'ELECTRODE TEMPERATURE':^35}\n"
+            f"{'─'*35}\n"
             f"Average: {T_avg:.2f} °C\n"
             f"Maximum: {T_max:.2f} °C\n"
             f"Minimum: {T_min:.2f} °C\n"
@@ -215,60 +213,21 @@ class LiveTemperaturePlotter:
         )
         
         if self.I_current is not None:
-            stats_text += f"\nCurrent: {self.I_current:.3f} A\n"
+            stats_text += f"\nCurrent: {self.I_current:.2f} A\n"
         
         if self.SoC is not None:
             stats_text += f"SoC: {self.SoC*100:.1f}%\n"
         
         self.ax_stats.text(0.1, 0.95, stats_text, transform=self.ax_stats.transAxes,
                           fontsize=10, verticalalignment='top', fontfamily='monospace',
-                          bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+                          bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
     
     def show(self) -> None:
         """Display the plot."""
         plt.show()
     
     def save_frame(self, filename: str) -> None:
-        """Save current figure to file."""
-        self.fig.savefig(filename, dpi=150, bbox_inches='tight')
-        print(f"Saved figure to {filename}")
+        """Save current frame to file."""
+        self.fig.savefig(filename, dpi=100, bbox_inches='tight')
 
 
-class LivePlotterAnimated:
-    """Animated version using matplotlib animation."""
-    
-    def __init__(self, 
-                 nx: int,
-                 ny: int, 
-                 nz: int,
-                 cell_name: str = 'cell_1',
-                 update_interval: int = 5,
-                 figsize: Tuple[int, int] = (16, 10)):
-        """Initialize animated plotter."""
-        self.nx = nx
-        self.ny = ny
-        self.nz = nz
-        self.plotter = LiveTemperaturePlotter(nx, ny, nz, cell_name, 
-                                             update_interval, figsize)
-        self.animation = None
-        self.should_update = False
-    
-    def add_data_callback(self, 
-                         T_nodes: np.ndarray,
-                         t_sim: float,
-                         step: int,
-                         I_current: Optional[float] = None,
-                         SoC: Optional[float] = None) -> None:
-        """Add data and trigger update if interval reached."""
-        self.plotter.update_temperature(T_nodes, t_sim, step, I_current, SoC)
-        
-        if step % self.plotter.update_interval == 0:
-            self.plotter.plot_update()
-    
-    def show(self) -> None:
-        """Display the animated plot."""
-        self.plotter.show()
-    
-    def save_frame(self, filename: str) -> None:
-        """Save current frame."""
-        self.plotter.save_frame(filename)
